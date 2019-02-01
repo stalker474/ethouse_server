@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"log"
 	"os"
 	"strconv"
@@ -70,7 +69,7 @@ func persist() {
 func fetchNewData() bool {
 	atomic.StoreUint32(&saveNeeded, 0)
 
-	var races []Race
+	var rolls []RollData
 	var err error
 
 	// get finished races list from ethorse bridge
@@ -134,69 +133,13 @@ func fetchNewData() bool {
 	return atomic.LoadUint32(&saveNeeded) == 1
 }
 
-func fetchRaceData(raceNumber uint32) {
-	defer func() { <-sem }()
-	log.Println("Fetching race #", raceNumber)
-	server.data.mux.Lock()
-	race, _ := server.data.racesData[raceNumber]
-	server.data.mux.Unlock()
-
-	changed, err := updateRaceData(&race)
-	if err != nil {
-		log.Println("Failed: race #", race.RaceNumber)
-	} else {
-		if changed {
-			server.data.mux.Lock()
-			server.data.racesData[raceNumber] = race
-			server.data.mux.Unlock()
-			atomic.StoreUint32(&saveNeeded, 1)
-		}
-
-		log.Println("Success: race #", raceNumber)
-	}
-	atomic.AddUint64(&ops, ^uint64(0))
-}
-
-func updateRaceData(race *RaceData) (bool, error) {
-	original, err := json.Marshal(race)
+func updateRollData(roll *RollData) (bool, error) {
+	original, err := json.Marshal(roll)
 	if err != nil {
 		return false, err
 	}
 
-	conn, err := ethclient.Dial("https://mainnet.infura.io/76d846153845432cb5760b832c6bd0f0")
-	if err != nil {
-		log.Fatalf("Failed to init node: %v", err)
-	}
-
-	//add a version number if doesnt exist
-	//a version number must be in this format X.X.X
-	if len(race.Version) < 5 {
-		// Instantiate the contract and display its name
-		contract, err := NewBetting(common.HexToAddress(race.ContractID), conn)
-		if err != nil {
-			return false, err
-		}
-		race.Version, err = contract.Version(nil)
-		if err != nil {
-			return false, err
-		}
-	}
-
-	conn.Close()
-
-	err = errors.New("dummyError")
-	for err != nil {
-		if strings.Compare(race.Version, "0.2.2") == 0 {
-			err = updateRaceData022(race)
-		} else if strings.Compare(race.Version, "0.2.3") == 0 {
-			err = updateRaceData023(race)
-		} else {
-			err = updateRaceData024(race)
-		}
-		if err != nil {
-			log.Println("#", race.RaceNumber, " Error : ", err)
-		}
-	}
+	err = updateRollData(roll)
 
 	//the race data changed, check if its complete now
 	race.Complete = strings.Compare(race.Active, "Closed") == 0 //must be closed to be complete
@@ -229,7 +172,7 @@ func updateRaceData(race *RaceData) (bool, error) {
 	return changed, err
 }
 
-func updateRaceData022(race *RaceData) error {
+func _updateRollData(roll *RollData) error {
 	conn, err := ethclient.Dial("https://mainnet.infura.io/76d846153845432cb5760b832c6bd0f0")
 	if err != nil {
 		log.Fatalf("Failed to init node: %v", err)
@@ -287,219 +230,5 @@ func updateRaceData022(race *RaceData) error {
 		race.Bets = append(race.Bets, Bet{WeiToEth(deposits.Event.Value), FromBytes32(deposits.Event.Horse)[0:3], deposits.Event.From.Hex()})
 	}
 
-	race.Volume = 0
-	race.Odds = []Odd{{Value: 0.0, Horse: "BTC"}, {Value: 0.0, Horse: "ETH"}, {Value: 0.0, Horse: "LTC"}}
-	poolsMap := make(map[string]float32)
-	for _, v := range race.Bets {
-		race.Volume += v.Value
-		poolsMap[v.Horse] += v.Value
-	}
-
-	for key, value := range poolsMap {
-		odd := race.findOdds(key)
-		if odd != nil {
-			odd.Value = race.Volume / value * 0.925
-		}
-	}
-
-	race.Withdraws = nil
-	for withdraws.Next() {
-		race.Withdraws = append(race.Withdraws, Withdraw{WeiToEth(withdraws.Event.Value), withdraws.Event.To.Hex()})
-	}
-
-	///
-	///
-	contractHelper, err := NewHorseyHelper(common.HexToAddress("0xe1d7ef76e0fb7c9fd3a583c9036bdd3e1322449e"), conn)
-	if err != nil {
-		return err
-	}
-
-	race.Refunded, err = contractHelper.IsRefunded(nil, common.HexToAddress(race.ContractID))
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func updateRaceData023(race *RaceData) error {
-	conn, err := ethclient.Dial("https://mainnet.infura.io/76d846153845432cb5760b832c6bd0f0")
-	if err != nil {
-		log.Fatalf("Failed to init node: %v", err)
-	} else {
-		defer conn.Close()
-	}
-	contract, err := NewBetting023(common.HexToAddress(race.ContractID), conn)
-	if err != nil {
-		return err
-	}
-
-	btcWon, err := contract.WinnerHorse(nil, ToBytes32("BTC"))
-	if err != nil {
-		return err
-	}
-	ltcWon, err := contract.WinnerHorse(nil, ToBytes32("LTC"))
-	if err != nil {
-		return err
-	}
-	ethWon, err := contract.WinnerHorse(nil, ToBytes32("ETH"))
-	if err != nil {
-		return err
-	}
-	firstBlock := uint64(5800000)
-	lastBlock := uint64(6199089)
-	deposits, err := contract.Betting023Filterer.FilterDeposit(&bind.FilterOpts{Start: firstBlock, End: &lastBlock, Context: nil})
-	for err != nil {
-		log.Println("#", race.RaceNumber, " Error : ", err)
-		deposits, err = contract.Betting023Filterer.FilterDeposit(&bind.FilterOpts{Start: firstBlock, End: &lastBlock, Context: nil})
-	}
-	defer deposits.Close()
-	withdraws, err := contract.Betting023Filterer.FilterWithdraw(&bind.FilterOpts{Start: firstBlock, End: &lastBlock, Context: nil})
-	for err != nil {
-		log.Println("#", race.RaceNumber, " Error : ", err)
-		withdraws, err = contract.Betting023Filterer.FilterWithdraw(&bind.FilterOpts{Start: firstBlock, End: &lastBlock, Context: nil})
-	}
-	defer withdraws.Close()
-
-	if btcWon || ltcWon || ethWon {
-		race.WinnerHorses = nil
-	}
-
-	if btcWon {
-		race.WinnerHorses = append(race.WinnerHorses, "BTC")
-	}
-	if ltcWon {
-		race.WinnerHorses = append(race.WinnerHorses, "LTC")
-	}
-	if ethWon {
-		race.WinnerHorses = append(race.WinnerHorses, "ETH")
-	}
-
-	race.Bets = nil
-	for deposits.Next() {
-		race.Bets = append(race.Bets, Bet{WeiToEth(deposits.Event.Value), FromBytes32(deposits.Event.Horse)[0:3], deposits.Event.From.Hex()})
-	}
-
-	race.Volume = 0
-	race.Odds = []Odd{{Value: 0.0, Horse: "BTC"}, {Value: 0.0, Horse: "ETH"}, {Value: 0.0, Horse: "LTC"}}
-	poolsMap := make(map[string]float32)
-	for _, v := range race.Bets {
-		race.Volume += v.Value
-		poolsMap[v.Horse] += v.Value
-	}
-
-	for key, value := range poolsMap {
-		odd := race.findOdds(key)
-		if odd != nil {
-			odd.Value = race.Volume / value * 0.925
-		}
-	}
-
-	race.Withdraws = nil
-	for withdraws.Next() {
-		race.Withdraws = append(race.Withdraws, Withdraw{WeiToEth(withdraws.Event.Value), withdraws.Event.To.Hex()})
-	}
-
-	///
-	///
-	contractHelper, err := NewHorseyHelper(common.HexToAddress("0xe1d7ef76e0fb7c9fd3a583c9036bdd3e1322449e"), conn)
-	if err != nil {
-		return err
-	}
-
-	race.Refunded, err = contractHelper.IsRefunded(nil, common.HexToAddress(race.ContractID))
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func updateRaceData024(race *RaceData) error {
-	conn, err := ethclient.Dial("wss://mainnet.infura.io/ws")
-	defer conn.Close()
-	if err != nil {
-		log.Fatalf("Failed to init node: %v", err)
-	}
-	contract, err := NewBetting024(common.HexToAddress(race.ContractID), conn)
-	if err != nil {
-		return err
-	}
-
-	btcWon, err := contract.WinnerHorse(nil, ToBytes32("BTC"))
-	if err != nil {
-		return err
-	}
-	ltcWon, err := contract.WinnerHorse(nil, ToBytes32("LTC"))
-	if err != nil {
-		return err
-	}
-	ethWon, err := contract.WinnerHorse(nil, ToBytes32("ETH"))
-	if err != nil {
-		return err
-	}
-
-	firstBlock := uint64(6100000)
-	deposits, err := contract.Betting024Filterer.FilterDeposit(&bind.FilterOpts{Start: firstBlock, End: nil, Context: nil})
-	for err != nil {
-		log.Println("#", race.RaceNumber, " Error deposits: ", err)
-		deposits, err = contract.Betting024Filterer.FilterDeposit(&bind.FilterOpts{Start: firstBlock, End: nil, Context: nil})
-	}
-	defer deposits.Close()
-	withdraws, err := contract.Betting024Filterer.FilterWithdraw(&bind.FilterOpts{Start: firstBlock, End: nil, Context: nil})
-	for err != nil {
-		log.Println("#", race.RaceNumber, " Error withdraws: ", err)
-		withdraws, err = contract.Betting024Filterer.FilterWithdraw(&bind.FilterOpts{Start: firstBlock, End: nil, Context: nil})
-	}
-	defer withdraws.Close()
-
-	if btcWon || ltcWon || ethWon {
-		race.WinnerHorses = nil
-	}
-
-	if btcWon {
-		race.WinnerHorses = append(race.WinnerHorses, "BTC")
-	}
-	if ltcWon {
-		race.WinnerHorses = append(race.WinnerHorses, "LTC")
-	}
-	if ethWon {
-		race.WinnerHorses = append(race.WinnerHorses, "ETH")
-	}
-
-	race.Bets = nil
-	for deposits.Next() {
-		race.Bets = append(race.Bets, Bet{WeiToEth(deposits.Event.Value), FromBytes32(deposits.Event.Horse)[0:3], deposits.Event.From.Hex()})
-	}
-
-	race.Volume = 0
-	race.Odds = []Odd{{Value: 0.0, Horse: "BTC"}, {Value: 0.0, Horse: "ETH"}, {Value: 0.0, Horse: "LTC"}}
-	poolsMap := make(map[string]float32)
-	for _, v := range race.Bets {
-		race.Volume += v.Value
-		poolsMap[v.Horse] += v.Value
-	}
-
-	for key, value := range poolsMap {
-		odd := race.findOdds(key)
-		if odd != nil {
-			odd.Value = race.Volume / value * 0.925
-		}
-	}
-
-	race.Withdraws = nil
-	for withdraws.Next() {
-		race.Withdraws = append(race.Withdraws, Withdraw{WeiToEth(withdraws.Event.Value), withdraws.Event.To.Hex()})
-	}
-
-	///
-	///
-	contractHelper, err := NewHorseyHelper(common.HexToAddress("0xe1d7ef76e0fb7c9fd3a583c9036bdd3e1322449e"), conn)
-	if err != nil {
-		return err
-	}
-
-	race.Refunded, err = contractHelper.IsRefunded(nil, common.HexToAddress(race.ContractID))
-	if err != nil {
-		return err
-	}
 	return nil
 }
