@@ -11,14 +11,14 @@ import (
 	"time"
 )
 
-var tempDbFile = "mle_db.json"
+var tempDbFile = "db.json"
 
-// ByRaceNumber sorter
-type ByRaceNumber []RollData
+// ByRollNumber sorter
+type ByRollNumber []RollData
 
-func (a ByRaceNumber) Len() int           { return len(a) }
-func (a ByRaceNumber) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a ByRaceNumber) Less(i, j int) bool { return a[i].RaceNumber > a[j].RaceNumber }
+func (a ByRollNumber) Len() int           { return len(a) }
+func (a ByRollNumber) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByRollNumber) Less(i, j int) bool { return a[i].RollNumber > a[j].RollNumber }
 
 // PersistObject blabla
 type PersistObject struct {
@@ -66,7 +66,7 @@ func (p *PersistObject) contains(rollNumber uint32) bool {
 
 func (p *PersistObject) toJSON(from uint32, to uint32) (s string, err error) {
 	p.mux.Lock()
-	data, err := json.Marshal(NewCache(p.racesData, from, to))
+	data, err := json.Marshal(NewCache(p.rollsData, from, to))
 	p.mux.Unlock()
 
 	s = string(data[:])
@@ -99,45 +99,16 @@ func NewCache(m map[uint32]RollData, from uint32, to uint32) (cache *Cache) {
 		}
 	}
 	cache.LastUpdate = time.Now().Unix()
-	sort.Sort(ByRaceNumber(cache.List))
-
-	return cache
-}
-
-// NewCacheLight blabla
-func NewCacheLight(m map[uint32]RaceData, from uint32, to uint32) (cache *CacheLight) {
-	cache = new(CacheLight)
-	for _, v := range m {
-		if (v.RaceNumber >= from) && (v.RaceNumber <= to) {
-			cache.List = append(cache.List, RaceDataLight{
-				ContractID:      v.ContractID,
-				Date:            v.Date,
-				RaceDuration:    v.RaceDuration,
-				BettingDuration: v.BettingDuration,
-				EndTime:         v.EndTime,
-				RaceNumber:      v.RaceNumber,
-				Version:         v.Version,
-				WinnerHorses:    v.WinnerHorses,
-				Odds:            v.Odds,
-				Volume:          v.Volume,
-				Refunded:        v.Refunded,
-				Active:          v.Active,
-				Complete:        v.Complete})
-		}
-	}
-	cache.LastUpdate = time.Now().Unix()
-	sort.Slice(cache.List, func(i, j int) bool {
-		return cache.List[i].RaceNumber > cache.List[j].RaceNumber
-	})
+	sort.Sort(ByRollNumber(cache.List))
 
 	return cache
 }
 
 // ToMap blabla
-func (c *Cache) toMap() map[uint32]RaceData {
-	m := make(map[uint32]RaceData)
+func (c *Cache) toMap() map[uint32]RollData {
+	m := make(map[uint32]RollData)
 	for _, v := range c.List[:] {
-		m[v.RaceNumber] = v
+		m[v.RollNumber] = v
 	}
 	return m
 }
@@ -146,16 +117,6 @@ func (c *Cache) toMap() map[uint32]RaceData {
 func Contains(s []string, e string) bool {
 	for _, a := range s {
 		if strings.Compare(a, e) == 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// Contains 2 blabla
-func Contains2(s []Withdraw, e string) bool {
-	for _, a := range s {
-		if strings.Compare(a.To, e) == 0 {
 			return true
 		}
 	}

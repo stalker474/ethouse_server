@@ -1,12 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"log"
 	"os"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +20,11 @@ var saveNeeded uint32
 
 var concurrency = 10
 var sem = make(chan bool, concurrency)
+var network = "kovan"
+var apiKey = "fc1f68c8cd0e4755b7744e45b124ee9a"
+var nodeURL = "https://" + network + ".infura.io/v3/" + apiKey
+var nodeWebSocket = "wss://" + network + ".infura.io/ws/v3/" + apiKey
+var contractAddress = "0xc7e907a241ebee49a667f2fefb047ff81d3ee86b"
 
 func main() {
 	port := os.Getenv("PORT")
@@ -66,169 +67,31 @@ func persist() {
 	log.Println("Cache Updated")
 }
 
-func fetchNewData() bool {
+func fetchNewData() (bool, error) {
 	atomic.StoreUint32(&saveNeeded, 0)
 
 	var rolls []RollData
 	var err error
 
-	// get finished races list from ethorse bridge
-	log.Println("fetching ethorse bridge archive race list")
-	races, err = fetchArchive()
-	if err != nil {
-		log.Println("Error :", err)
-		return false
-	}
-	//make a single list of bridge + ours data
-	for _, v := range races {
-		raceNumber, err := strconv.Atoi(v.RaceNumber)
-		if err != nil {
-			log.Fatal("Error :", err)
-			return false
-		}
-		server.data.mux.Lock()
-		race, contains := server.data.racesData[uint32(raceNumber)]
-		//is this a race we dont have in our list yet?
-		if !contains {
-			//create it and append
-			server.data.racesData[uint32(raceNumber)], err = v.toRaceData()
-			if err != nil {
-				log.Fatal("Error :", err)
-			}
-		} else if strings.Compare(race.Active, v.Active) != 0 { //just update the current status
-			race.Active = v.Active
-			server.data.racesData[uint32(raceNumber)] = race
-		}
-		server.data.mux.Unlock()
-	}
-
-	//select non complete races
-	//Complete flag marks a race with all data up to date and impossible to change
-	//Such as all winners withdrew their winnings
-	var racesToUpdate []uint32
-	server.data.mux.Lock()
-	for raceNumber, race := range server.data.racesData {
-		if !race.Complete {
-			racesToUpdate = append(racesToUpdate, raceNumber)
-		}
-	}
-	atomic.AddUint64(&ops, uint64(len(racesToUpdate)))
-	server.data.mux.Unlock()
-
-	for _, val := range racesToUpdate {
-		sem <- true
-		go fetchRaceData(val)
-	}
-	//try to push all values to make sure we Wait
-	for i := 0; i < cap(sem); i++ {
-		sem <- true
-	}
-	//prepare the sem for another round by freeing slots
-	for i := 0; i < cap(sem); i++ {
-		<-sem
-	}
-
-	log.Println("DONE")
-
-	return atomic.LoadUint32(&saveNeeded) == 1
-}
-
-func updateRollData(roll *RollData) (bool, error) {
-	original, err := json.Marshal(roll)
-	if err != nil {
-		return false, err
-	}
-
-	err = updateRollData(roll)
-
-	//the race data changed, check if its complete now
-	race.Complete = strings.Compare(race.Active, "Closed") == 0 //must be closed to be complete
-	if len(race.Bets) == 0 {
-		//races without bets
-		race.Complete = false
-	}
-	for _, bet := range race.Bets {
-		if Contains(race.WinnerHorses, bet.Horse) || race.Refunded {
-			//this bet was won or was refunded
-			if !Contains2(race.Withdraws, bet.From) {
-				race.Complete = false
-				break
-			}
-		}
-	}
-	if race.Refunded {
-		race.Complete = true
-	} else {
-		if len(race.Withdraws) == 0 {
-			race.Complete = false
-		}
-	}
-	now, err := json.Marshal(race)
-	if err != nil {
-		return false, err
-	}
-
-	changed := !bytes.Equal(now, original)
-	return changed, err
-}
-
-func _updateRollData(roll *RollData) error {
-	conn, err := ethclient.Dial("https://mainnet.infura.io/76d846153845432cb5760b832c6bd0f0")
+	conn, err := ethclient.Dial(nodeURL)
 	if err != nil {
 		log.Fatalf("Failed to init node: %v", err)
 	} else {
 		defer conn.Close()
 	}
-	contract, err := NewBetting022(common.HexToAddress(race.ContractID), conn)
+	contract, err := NewPriceRoll(common.HexToAddress(contractAddress), conn)
 	if err != nil {
-		return err
-	}
-
-	btcWon, err := contract.WinnerHorse(nil, ToBytes32("BTC"))
-	if err != nil {
-		return err
-	}
-	ltcWon, err := contract.WinnerHorse(nil, ToBytes32("LTC"))
-	if err != nil {
-		return err
-	}
-	ethWon, err := contract.WinnerHorse(nil, ToBytes32("ETH"))
-	if err != nil {
-		return err
+		log.Fatalf("Failed to reach contract: %v", err)
 	}
 	firstBlock := uint64(5400000)
 	lastBlock := uint64(5900000)
-	deposits, err := contract.Betting022Filterer.FilterDeposit(&bind.FilterOpts{Start: firstBlock, End: &lastBlock, Context: nil})
-	for err != nil {
-		log.Println("#", race.RaceNumber, " Error : ", err)
-		deposits, err = contract.Betting022Filterer.FilterDeposit(&bind.FilterOpts{Start: firstBlock, End: &lastBlock, Context: nil})
-	}
-	defer deposits.Close()
-	withdraws, err := contract.Betting022Filterer.FilterWithdraw(&bind.FilterOpts{Start: firstBlock, End: &lastBlock, Context: nil})
-	for err != nil {
-		log.Println("#", race.RaceNumber, " Error : ", err)
-		withdraws, err = contract.Betting022Filterer.FilterWithdraw(&bind.FilterOpts{Start: firstBlock, End: &lastBlock, Context: nil})
-	}
-	defer withdraws.Close()
-
-	if btcWon || ltcWon || ethWon {
-		race.WinnerHorses = nil
+	rollEvents, err := contract.PriceRollFilterer.FilterNewRoll(&bind.FilterOpts{Start: firstBlock, End: &lastBlock, Context: nil})
+	defer rollEvents.Close()
+	for rollEvents.Next() {
+		rollEvents.Event.
 	}
 
-	if btcWon {
-		race.WinnerHorses = append(race.WinnerHorses, "BTC")
-	}
-	if ltcWon {
-		race.WinnerHorses = append(race.WinnerHorses, "LTC")
-	}
-	if ethWon {
-		race.WinnerHorses = append(race.WinnerHorses, "ETH")
-	}
+	log.Println("DONE")
 
-	race.Bets = nil
-	for deposits.Next() {
-		race.Bets = append(race.Bets, Bet{WeiToEth(deposits.Event.Value), FromBytes32(deposits.Event.Horse)[0:3], deposits.Event.From.Hex()})
-	}
-
-	return nil
+	return false, atomic.LoadUint32(&saveNeeded) == 1
 }
