@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
-	"sync/atomic"
 )
 
 // Server Represents our api server
@@ -76,26 +75,7 @@ func (s *Server) Serve(port string) error {
 	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
 		enableDecoratorsGz(&w)
 		enableCors(&w)
-		from, to, err := getFromAndTo(r)
-		if err != nil {
-			fmt.Fprintln(w, err.Error())
-		}
-		req := "stats" + strconv.Itoa(int(from)) + "_" + strconv.Itoa(int(to))
-		s.cacheMux.Lock()
-		_, exists := s.cache[req]
-		if exists {
-			fmt.Fprintln(w, s.cache[req])
-		} else {
-			data, err := s.data.toCharts(from, to)
-			if err != nil {
-				fmt.Fprintln(w, err.Error())
-			} else {
-				str := string(data[:])
-				fmt.Fprintln(w, str)
-				s.cache[req] = str
-			}
-		}
-		s.cacheMux.Unlock()
+		fmt.Fprintln(w, "plop")
 	})
 
 	return http.ListenAndServe(":"+port, nil)

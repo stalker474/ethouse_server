@@ -22,14 +22,14 @@ func (a ByRollNumber) Less(i, j int) bool { return a[i].RollNumber > a[j].RollNu
 
 // PersistObject blabla
 type PersistObject struct {
-	rollsData map[uint32]RollData
+	rollsData map[uint64]RollData
 	mux       sync.Mutex
 }
 
 // NewPersistObject Create new database
 func NewPersistObject() (p *PersistObject) {
 	p = new(PersistObject)
-	p.rollsData = make(map[uint32]RollData)
+	p.rollsData = make(map[uint64]RollData)
 	return p
 }
 
@@ -59,12 +59,12 @@ func (p *PersistObject) load() error {
 	return nil
 }
 
-func (p *PersistObject) contains(rollNumber uint32) bool {
+func (p *PersistObject) contains(rollNumber uint64) bool {
 	_, exists := p.rollsData[rollNumber]
 	return exists
 }
 
-func (p *PersistObject) toJSON(from uint32, to uint32) (s string, err error) {
+func (p *PersistObject) toJSON(from uint64, to uint64) (s string, err error) {
 	p.mux.Lock()
 	data, err := json.Marshal(NewCache(p.rollsData, from, to))
 	p.mux.Unlock()
@@ -73,7 +73,7 @@ func (p *PersistObject) toJSON(from uint32, to uint32) (s string, err error) {
 	return s, err
 }
 
-func (p *PersistObject) toZJSON(from uint32, to uint32) (s string, err error) {
+func (p *PersistObject) toZJSON(from uint64, to uint64) (s string, err error) {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
 	data, err := p.toJSON(from, to)
@@ -91,7 +91,7 @@ func (p *PersistObject) toZJSON(from uint32, to uint32) (s string, err error) {
 }
 
 // NewCache blabla
-func NewCache(m map[uint32]RollData, from uint32, to uint32) (cache *Cache) {
+func NewCache(m map[uint64]RollData, from uint64, to uint64) (cache *Cache) {
 	cache = new(Cache)
 	for _, v := range m {
 		if (v.RollNumber >= from) && (v.RollNumber <= to) {
@@ -105,8 +105,8 @@ func NewCache(m map[uint32]RollData, from uint32, to uint32) (cache *Cache) {
 }
 
 // ToMap blabla
-func (c *Cache) toMap() map[uint32]RollData {
-	m := make(map[uint32]RollData)
+func (c *Cache) toMap() map[uint64]RollData {
+	m := make(map[uint64]RollData)
 	for _, v := range c.List[:] {
 		m[v.RollNumber] = v
 	}

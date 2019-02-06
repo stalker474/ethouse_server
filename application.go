@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/binary"
 	"log"
+	"math/big"
 	"os"
 	"sync/atomic"
 	"time"
@@ -24,7 +26,7 @@ var network = "kovan"
 var apiKey = "fc1f68c8cd0e4755b7744e45b124ee9a"
 var nodeURL = "https://" + network + ".infura.io/v3/" + apiKey
 var nodeWebSocket = "wss://" + network + ".infura.io/ws/v3/" + apiKey
-var contractAddress = "0xc7e907a241ebee49a667f2fefb047ff81d3ee86b"
+var contractAddress = "0x16a9dcc9098b03e3d5279e762bfcd5a9fcf8854a"
 
 func main() {
 	port := os.Getenv("PORT")
@@ -52,7 +54,11 @@ func main() {
 func updateCache() {
 	for true {
 		log.Println("fetching new data...")
-		if !fetchNewData() {
+		changed, err := fetchNewData()
+		if err != nil {
+			log.Println("Failed to fetch new data, creating one : ", err)
+		}
+		if !changed {
 			log.Println("No changes...")
 		} else {
 			persist()
@@ -83,15 +89,73 @@ func fetchNewData() (bool, error) {
 	if err != nil {
 		log.Fatalf("Failed to reach contract: %v", err)
 	}
-	firstBlock := uint64(5400000)
-	lastBlock := uint64(5900000)
-	rollEvents, err := contract.PriceRollFilterer.FilterNewRoll(&bind.FilterOpts{Start: firstBlock, End: &lastBlock, Context: nil})
+
+	rollEvents, err := contract.PriceRollFilterer.FilterNewRoll(&bind.FilterOpts{Start: 0, End: nil, Context: nil}, nil)
 	defer rollEvents.Close()
 	for rollEvents.Next() {
-		rollEvents.Event.
+		rolls = append(rolls, RollData{RollNumber: rollEvents.Event.Round.Uint64()})
+		rolls[len(rolls)-1].Bets = make(map[string]BetData)
 	}
 
-	log.Println("DONE")
+	log.Println("ROLLS DONE")
 
-	return false, atomic.LoadUint32(&saveNeeded) == 1
+	for _, v := range rolls {
+
+		roll, contains := server.data.rollsData[v.RollNumber]
+		if !contains {
+			//create it and append
+			server.data.mux.Lock()
+			server.data.rollsData[v.RollNumber] = v
+			server.data.mux.Unlock()
+			if err != nil {
+				log.Fatal("Error :", err)
+			}
+			roll = v
+		}
+		if !roll.AllClaimed {
+			//no data, update
+			changed, err := updateRollData(&roll, contract)
+			if err != nil {
+				log.Fatal("Error :", err)
+			} else if changed {
+				server.data.mux.Lock()
+				server.data.rollsData[v.RollNumber] = roll
+				server.data.mux.Unlock()
+				atomic.StoreUint32(&saveNeeded, 1)
+			}
+		}
+	}
+
+	return atomic.LoadUint32(&saveNeeded) == 1, nil
+}
+
+func updateRollData(roll *RollData, contract *PriceRoll) (bool, error) {
+	rollIds := []*big.Int{big.NewInt(int64(roll.RollNumber))}
+	var bets []BetData
+	betEvents, err := contract.PriceRollFilterer.FilterBetPlaced(&bind.FilterOpts{Start: 0, End: nil, Context: nil}, rollIds, nil)
+	if err != nil {
+		log.Fatalf("Failed to reach contract: %v", err)
+	}
+	defer betEvents.Close()
+
+	for betEvents.Next() {
+
+		plop1 := binary.BigEndian.Uint64(betEvents.Event.Raw.Data[24:32])
+		plop2 := binary.BigEndian.Uint64(betEvents.Event.Raw.Data[56:64])
+		plop3 := binary.BigEndian.Uint64(betEvents.Event.Raw.Data[88:96])
+		log.Println(plop1)
+		log.Println(plop2)
+		log.Println(plop3)
+		//plop2 := binary.BigEndian.Uint64(betEvents.Event.Raw.Data[32])
+
+		bets = append(bets, BetData{
+			RollNumber:    betEvents.Event.Round.Uint64(),
+			Amount:        betEvents.Event.Amount.Uint64(),
+			Player:        betEvents.Event.Player.Hex(),
+			ExpectedValue: uint8(plop2),
+			IsUp:          plop3 == 1,
+		})
+	}
+
+	return true, nil
 }
