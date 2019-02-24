@@ -1,29 +1,35 @@
 package main
 
-// RollData blabla
-type RollData struct {
-	RollNumber uint64             `json:"number"`
-	Timestamp  uint64             `json:"timestamp"`
-	Pool       uint64             `json:"pool"`
-	State      uint8              `json:"state"`
-	Coin       uint8              `json:"coin"`
-	ResultRng  uint8              `json:"result_rng"`
-	IsUp       bool               `json:"is_up"`
-	AllClaimed bool               `json:"all_claimed"`
-	Bets       map[string]BetData `json:"bets"`
+import "math/big"
+
+// Key blabla
+type Key struct {
+	Index uint64
+	Tier  uint8
 }
 
-// BetData blabla
-type BetData struct {
-	RollNumber    uint64 `json:"number"`
-	Amount        uint64 `json:"amount"`
-	ExpectedValue uint8  `json:"expected_value"`
-	IsUp          bool   `json:"is_up"`
-	Player        string `json:"player"`
+// SlotData blabla
+type SlotData struct {
+	Index         uint64 `json:"index"`
+	Tier          uint8  `json:"tier"`
+	Price         uint64 `json:"price"`
+	Owner         string `json:"owner"`
+	PreviousOwner string `json:"previous_owner"`
 }
 
-// Cache blabla
-type Cache struct {
-	List       []RollData `json:"list"`
-	LastUpdate int64      `json:"last_update"`
+// ContractData blabla
+type ContractData struct {
+	PriceCheckDelay big.Int `json:"pricecheck_delay"`
+	Tier1Payout     big.Int `json:"tier1_payout"`
+	Tier2Payout     big.Int `json:"tier2_payout"`
+	Tier3Payout     big.Int `json:"tier3_payout"`
+	Tier1Price      big.Int `json:"tier1_price"`
+	Tier2Price      big.Int `json:"tier2_parice"`
+	Tier3Price      big.Int `json:"tier3_price"`
+	RebuyMult       big.Int `json:"rebuy_mult"`
+	RebuyFee        big.Int `json:"rebuy_fee"`
+	ResellFee       big.Int `json:"resell_fee"`
+	HotnessMod      big.Int `json:"hotness_mod"`
+	Spread          big.Int `json:"spread"`
+	HouseCut        big.Int `json:"house_cut"`
 }

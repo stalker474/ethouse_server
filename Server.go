@@ -1,31 +1,21 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
-	"sync"
 )
 
 // Server Represents our api server
 type Server struct {
-	data     *PersistObject
-	cacheMux sync.Mutex
-	cache    map[string]string
+	Database *Db
 }
 
 // NewServer blabla
 func NewServer() (s *Server) {
 	s = new(Server)
-	s.data = NewPersistObject()
-	s.resetCache()
+	s.Database = NewDb()
 	return s
-}
-
-func (s *Server) resetCache() {
-	s.cacheMux.Lock()
-	s.cache = make(map[string]string)
-	s.cacheMux.Unlock()
 }
 
 func enableCors(w *http.ResponseWriter) {
@@ -43,39 +33,33 @@ func enableDecoratorsGz(w *http.ResponseWriter) {
 	(*w).Header().Set("Content-Type", "text/javascript")
 }
 
-func getFromAndTo(r *http.Request) (from uint64, to uint64, err error) {
-	keysFrom, okFrom := r.URL.Query()["from"]
-	keysTo, okTo := r.URL.Query()["to"]
-
-	from = 0
-	to = 9999999999999999999
-
-	if okFrom && (len(keysFrom) > 0) {
-		val, err := strconv.ParseInt(keysFrom[0], 10, 64)
-		if err != nil {
-			return 0, 0, err
-		}
-
-		from = uint64(val)
-	}
-	if okTo && (len(keysTo) > 0) {
-		val, err := strconv.ParseInt(keysTo[0], 10, 64)
-		if err != nil {
-			return 0, 0, err
-		}
-		to = uint64(val)
-	}
-
-	return from, to, nil
-}
-
 // Serve start the server on port port
 func (s *Server) Serve(port string) error {
 
-	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
-		enableDecoratorsGz(&w)
+	http.HandleFunc("/owned", func(w http.ResponseWriter, r *http.Request) {
+		//enableDecoratorsGz(&w)
 		enableCors(&w)
-		fmt.Fprintln(w, "plop")
+		keysWho, okWho := r.URL.Query()["who"]
+		if !okWho {
+			fmt.Fprintln(w, "Missing who param")
+			return
+		}
+		s.Database.mux.Lock()
+		slots, exists := s.Database.ownerToSlots[keysWho[0]]
+		if !exists {
+			slots = make([]Key, 0)
+		} else {
+
+		}
+
+		data, err := json.Marshal(slots)
+		if err != nil {
+			fmt.Fprintln(w, err.Error())
+		} else {
+			str := string(data[:])
+			fmt.Fprintln(w, str)
+		}
+		s.Database.mux.Unlock()
 	})
 
 	return http.ListenAndServe(":"+port, nil)
