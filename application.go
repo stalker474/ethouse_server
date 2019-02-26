@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -11,12 +12,13 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 )
 
-var server *Server
 var network = "kovan"
 var apiKey = "fc1f68c8cd0e4755b7744e45b124ee9a"
 var nodeURL = "https://" + network + ".infura.io/v3/" + apiKey
 var nodeWebSocket = "wss://" + network + ".infura.io/ws/v3/" + apiKey
-var contractAddress = "0x63E91B45dcBB01eD5CD1eAb2AcfD658AD2994d51"
+var contractAddress = "0x3a86e26B30AC48F5ec06aF6BC8E3F4898F569886"
+
+var server *Server
 
 // InternalError blabla
 type InternalError struct {
@@ -27,26 +29,59 @@ func (e *InternalError) Error() string {
 	return fmt.Sprintf("parse %v: internal error", e.Path)
 }
 
+func initConn() (*ethclient.Client, *CoinEmpire, error) {
+	conn, err := ethclient.Dial(nodeWebSocket)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	contract, err := NewCoinEmpire(common.HexToAddress(contractAddress), conn)
+	if err != nil {
+		conn.Close()
+		return nil, nil, err
+	}
+	return conn, contract, nil
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "5000"
 	}
 	server = NewServer()
-	var err error
-	conn, err := ethclient.Dial(nodeWebSocket)
+
+	conn, contract, err := initConn()
 	if err != nil {
-		log.Fatalf("Failed to init node: %v", err)
-	} else {
-		defer conn.Close()
+		log.Fatalf("Critical : %v", err)
 	}
-	contract, err := NewCoinEmpire(common.HexToAddress(contractAddress), conn)
-	if err != nil {
-		log.Fatalf("Failed to reach contract: %v", err)
-	}
+	defer conn.Close()
 
 	log.Println("starting...")
-	go update(contract, server.Database)
+
+	log.Println("updating slots...")
+	err = updateSlots(contract)
+	if err != nil {
+		log.Fatalf("Critical : %v", err)
+	}
+
+	log.Println("updating config...")
+	err = updateConfig(contract)
+	if err != nil {
+		log.Fatalf("Critical : %v", err)
+	}
+
+	log.Println("updating other data...")
+	err = updateAdditional(contract)
+	if err != nil {
+		log.Fatalf("Critical : %v", err)
+	}
+
+	log.Println("starting watching config...")
+	go watchConfig()
+	log.Println("starting watching slots...")
+	go watchSlots()
+	log.Println("starting watching price updates...")
+	go watchSamplingPriceEnded()
 
 	log.Println("starting api on port ", port)
 	err = server.Serve(port)
@@ -56,38 +91,50 @@ func main() {
 	log.Println("exiting...")
 }
 
-func update(contract *CoinEmpire, db *Db) {
+func updateSlots(contract *CoinEmpire) error {
 	purchaseEvents, err := contract.CoinEmpireFilterer.FilterSlotPurchased(&bind.FilterOpts{Start: 0, End: nil, Context: nil})
 	if err != nil {
-		log.Println("Failed to fetch init events : ", err)
+		return err
 	}
 
 	for purchaseEvents.Next() {
-		handleNewPurchase(purchaseEvents.Event, db)
+		handleNewPurchase(purchaseEvents.Event)
 	}
 
 	purchaseEvents.Close()
 
-	logs := make(chan *CoinEmpireSlotPurchased)
+	return nil
+}
 
-	err = new(InternalError)
+func watchSamplingPriceEnded() {
+	var conn *ethclient.Client
+	var contract *CoinEmpire
+	var err error
+
+	logs := make(chan *CoinEmpireSamplingPriceEnded)
+
+	fmt.Println("Subscribing SamplingPriceEnded")
+
 	var sub event.Subscription
-	for err != nil {
-		sub, err = contract.CoinEmpireFilterer.WatchSlotPurchased(&bind.WatchOpts{Start: nil, Context: nil}, logs)
+	err = retry(func() error {
+		conn, contract, err = initConn()
 		if err != nil {
-			log.Println("Failed to subscribe to future events : ", err)
-			conn, err := ethclient.Dial(nodeWebSocket)
-			if err != nil {
-				log.Fatalf("Failed to init node: %v", err)
-			} else {
-				defer conn.Close()
-			}
-			contract, err = NewCoinEmpire(common.HexToAddress(contractAddress), conn)
-			if err != nil {
-				log.Fatalf("Failed to reach contract: %v", err)
-			}
+			log.Fatalf("Critical : %v", err)
 		}
+
+		sub, err = contract.CoinEmpireFilterer.WatchSamplingPriceEnded(&bind.WatchOpts{Start: nil, Context: nil}, logs)
+		if err != nil {
+			log.Fatalf("Critical : %v", err)
+		}
+		return err
+	}, 10)
+	if err != nil {
+		log.Fatalf("Critical : %v", err)
 	}
+
+	defer conn.Close()
+
+	fmt.Println("Subscribed")
 
 	for {
 		select {
@@ -95,9 +142,127 @@ func update(contract *CoinEmpire, db *Db) {
 			log.Fatal(err)
 		case vLog := <-logs:
 			fmt.Println(vLog) // pointer to event log
-			handleNewPurchase(vLog, db)
+			handleSamplingPriceEnded(vLog)
 		}
 	}
+}
+
+func watchSlots() {
+	var conn *ethclient.Client
+	var contract *CoinEmpire
+	var err error
+
+	logs := make(chan *CoinEmpireSlotPurchased)
+
+	fmt.Println("Subscribing WatchSlotPurchased...")
+
+	var sub event.Subscription
+	err = retry(func() error {
+		conn, contract, err = initConn()
+		if err != nil {
+			log.Fatalf("Critical : %v", err)
+		}
+
+		sub, err = contract.CoinEmpireFilterer.WatchSlotPurchased(&bind.WatchOpts{Start: nil, Context: nil}, logs)
+		if err != nil {
+			log.Fatalf("Critical : %v", err)
+		}
+		return err
+	}, 10)
+	if err != nil {
+		log.Fatalf("Critical : %v", err)
+	}
+
+	defer conn.Close()
+
+	fmt.Println("Subscribed")
+
+	for {
+		select {
+		case err := <-sub.Err():
+			log.Fatal(err)
+		case vLog := <-logs:
+			fmt.Println(vLog) // pointer to event log
+			handleNewPurchase(vLog)
+		}
+	}
+}
+
+func updateConfig(contract *CoinEmpire) error {
+	server.Database.mux.Lock()
+	defer server.Database.mux.Unlock()
+	for _, name := range ConfigNames {
+		result, err := contract.Config(nil, stringToBytes32(name))
+		if err != nil {
+			return err
+		}
+		*server.Database.configMap[name] = result
+	}
+
+	return nil
+}
+
+func updateAdditional(contract *CoinEmpire) error {
+	server.Database.mux.Lock()
+	defer server.Database.mux.Unlock()
+	result, err := contract.CurrentPrice(nil)
+	if err != nil {
+		return err
+	}
+	server.Database.currentPrice = result
+	return nil
+}
+
+func watchConfig() {
+	var conn *ethclient.Client
+	var contract *CoinEmpire
+	var err error
+	logs := make(chan *CoinEmpireConfigChanged)
+
+	fmt.Println("Subscribing WatchConfigChanged...")
+	var sub event.Subscription
+	err = retry(func() error {
+		conn, contract, err = initConn()
+		if err != nil {
+			log.Fatalf("Critical : %v", err)
+		}
+
+		sub, err = contract.CoinEmpireFilterer.WatchConfigChanged(&bind.WatchOpts{Start: nil, Context: nil}, logs)
+		if err != nil {
+			log.Printf("Error : %v", err)
+		}
+		return err
+	}, 10)
+	if err != nil {
+		log.Fatalf("Critical : %v", err)
+	}
+
+	defer conn.Close()
+
+	fmt.Println("Subscribed")
+
+	for {
+		select {
+		case err := <-sub.Err():
+			log.Fatal(err)
+		case vLog := <-logs:
+			fmt.Println(vLog) // pointer to event log
+			handleConfigChanged(vLog)
+		}
+	}
+}
+
+type fetchFunc func() error
+
+func retry(myFunc fetchFunc, maxRetry uint) error {
+	var counter uint
+	for (myFunc() != nil) && counter < maxRetry {
+		counter++
+	}
+	if counter >= maxRetry {
+		return errors.New("Used all retry credits")
+	}
+	return nil
 }
 
 func remove(s []Key, i int) []Key {
@@ -105,26 +270,41 @@ func remove(s []Key, i int) []Key {
 	return s[:len(s)-1]
 }
 
-func handleContractValuesUpdate(contract *CoinEmpire, db *Db) {
-	db.mux.Lock()
-
-	db.mux.Unlock()
+func stringToBytes32(s string) [32]byte {
+	var bytes [32]byte
+	for i, c := range s {
+		bytes[i] = byte(c)
+	}
+	return bytes
 }
 
-func handleNewPurchase(event *CoinEmpireSlotPurchased, db *Db) {
-	db.mux.Lock()
-	log.Println("New event!")
+func bytes32ToString(bytes [32]byte) string {
+	return string(bytes[:32])
+}
+
+func handleConfigChanged(event *CoinEmpireConfigChanged) {
+	server.Database.mux.Lock()
+	defer server.Database.mux.Unlock()
+	log.Println("New handleConfigChanged!")
+	name := bytes32ToString(event.Name)
+	*server.Database.configMap[name] = event.NewValue
+}
+
+func handleNewPurchase(event *CoinEmpireSlotPurchased) {
+	server.Database.mux.Lock()
+	defer server.Database.mux.Unlock()
+	log.Println("New handleNewPurchase!")
 	index := event.Price.Uint64()
 	tier := event.Tier
 	owner := event.By.Hex()
 	prevOwner := event.From.Hex()
 	fmt.Printf("Slot %d, new data \n", index)
 	key := Key{index, tier}
-	_, found := db.indexToSlot[key]
+	_, found := server.Database.indexToSlot[key]
 	if found {
 		log.Println("Slot already exists in DB")
 		//find index of the key
-		slots := db.ownerToSlots[prevOwner]
+		slots := server.Database.ownerToSlots[prevOwner]
 		if len(slots) > 0 {
 			var i int
 			var element Key
@@ -133,16 +313,23 @@ func handleNewPurchase(event *CoinEmpireSlotPurchased, db *Db) {
 					break
 				}
 			}
-			db.ownerToSlots[prevOwner] = remove(db.ownerToSlots[prevOwner], i)
+			server.Database.ownerToSlots[prevOwner] = remove(server.Database.ownerToSlots[prevOwner], i)
 		}
 
 	} else {
-		db.indexToSlot[key] = SlotData{index, tier, 0, owner, event.From.Hex()}
-		if db.ownerToSlots[owner] == nil {
-			db.ownerToSlots[owner] = make([]Key, 0)
+		server.Database.indexToSlot[key] = SlotData{index, tier, 0, owner, event.From.Hex()}
+		if server.Database.ownerToSlots[owner] == nil {
+			server.Database.ownerToSlots[owner] = make([]Key, 0)
 		}
 	}
 
-	db.ownerToSlots[owner] = append(db.ownerToSlots[owner], key)
-	db.mux.Unlock()
+	server.Database.ownerToSlots[owner] = append(server.Database.ownerToSlots[owner], key)
+}
+
+func handleSamplingPriceEnded(event *CoinEmpireSamplingPriceEnded) {
+	server.Database.mux.Lock()
+	defer server.Database.mux.Unlock()
+	log.Println("New handleSamplingPriceEnded!")
+	//update min max and stuff
+	server.Database.currentPrice = event.Price
 }

@@ -62,5 +62,51 @@ func (s *Server) Serve(port string) error {
 		s.Database.mux.Unlock()
 	})
 
+	http.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
+		enableCors(&w)
+
+		s.Database.mux.Lock()
+
+		data, err := json.Marshal(s.Database.config)
+		if err != nil {
+			fmt.Fprintln(w, err.Error())
+		} else {
+			str := string(data[:])
+			fmt.Fprintln(w, str)
+		}
+		s.Database.mux.Unlock()
+	})
+
+	http.HandleFunc("/cities", func(w http.ResponseWriter, r *http.Request) {
+		enableCors(&w)
+
+		s.Database.mux.Lock()
+		spread := s.Database.config.Spread.Uint64() / 2
+		precision := uint64(1000000)
+		price := s.Database.currentPrice.Uint64()
+		min := price * (precision - spread) / precision
+		max := price * (precision + spread) / precision
+
+		minCity := min / 100
+		maxCity := max / 100
+
+		citiesList := make([]SlotData, maxCity-minCity)
+
+		for i := minCity; i <= maxCity; i++ {
+			searchKey := Key{i * 100, 0}
+			val := s.Database.indexToSlot[searchKey]
+			citiesList[i-minCity] = val
+		}
+
+		data, err := json.Marshal(citiesList)
+		if err != nil {
+			fmt.Fprintln(w, err.Error())
+		} else {
+			str := string(data[:])
+			fmt.Fprintln(w, str)
+		}
+		s.Database.mux.Unlock()
+	})
+
 	return http.ListenAndServe(":"+port, nil)
 }
