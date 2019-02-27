@@ -119,12 +119,12 @@ func watchSamplingPriceEnded() {
 	err = retry(func() error {
 		conn, contract, err = initConn()
 		if err != nil {
-			log.Fatalf("Critical : %v", err)
+			log.Fatalf("Critical conn : %v", err)
 		}
 
 		sub, err = contract.CoinEmpireFilterer.WatchSamplingPriceEnded(&bind.WatchOpts{Start: nil, Context: nil}, logs)
 		if err != nil {
-			log.Fatalf("Critical : %v", err)
+			log.Printf("Error : %v", err)
 		}
 		return err
 	}, 10)
@@ -160,12 +160,12 @@ func watchSlots() {
 	err = retry(func() error {
 		conn, contract, err = initConn()
 		if err != nil {
-			log.Fatalf("Critical : %v", err)
+			log.Fatalf("Critical conn : %v", err)
 		}
 
 		sub, err = contract.CoinEmpireFilterer.WatchSlotPurchased(&bind.WatchOpts{Start: nil, Context: nil}, logs)
 		if err != nil {
-			log.Fatalf("Critical : %v", err)
+			log.Printf("Error : %v", err)
 		}
 		return err
 	}, 10)
@@ -224,7 +224,7 @@ func watchConfig() {
 	err = retry(func() error {
 		conn, contract, err = initConn()
 		if err != nil {
-			log.Fatalf("Critical : %v", err)
+			log.Fatalf("Critical conn: %v", err)
 		}
 
 		sub, err = contract.CoinEmpireFilterer.WatchConfigChanged(&bind.WatchOpts{Start: nil, Context: nil}, logs)
