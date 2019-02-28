@@ -4,19 +4,18 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/ethereum/go-ethereum/event"
 )
 
 var network = "kovan"
 var apiKey = "fc1f68c8cd0e4755b7744e45b124ee9a"
 var nodeURL = "https://" + network + ".infura.io/v3/" + apiKey
-var nodeWebSocket = "wss://" + network + ".infura.io/ws/v3/" + apiKey
-var contractAddress = "0x3a86e26B30AC48F5ec06aF6BC8E3F4898F569886"
+var nodeWebSocket = "wss://" + network + ".infura.io/ws"
+var contractAddress = "0xe909b6925286f6774f783649788e12a2414a5c56"
 
 var server *Server
 
@@ -43,6 +42,26 @@ func initConn() (*ethclient.Client, *CoinEmpire, error) {
 	return conn, contract, nil
 }
 
+/*
+type myContext struct {
+}
+
+func (*myContext) Deadline() (time.Time, bool) {
+	return time.Now(), false
+}
+
+func (myContext) Done() <-chan struct{} {
+	return nil
+}
+
+func (myContext) Err() error {
+	return nil
+}
+
+func (myContext) Value(key interface{}) interface{} {
+	return nil
+}
+*/
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -70,6 +89,12 @@ func main() {
 		log.Fatalf("Critical : %v", err)
 	}
 
+	log.Println("updating payouts...")
+	err = updatePayouts(contract)
+	if err != nil {
+		log.Fatalf("Critical : %v", err)
+	}
+
 	log.Println("updating other data...")
 	err = updateAdditional(contract)
 	if err != nil {
@@ -77,11 +102,77 @@ func main() {
 	}
 
 	log.Println("starting watching config...")
-	go watchConfig()
+	go watchEvent(func(contract *CoinEmpire) error {
+		logs := make(chan *CoinEmpireConfigChanged)
+		sub, err := contract.CoinEmpireFilterer.WatchConfigChanged(nil, logs)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Success...")
+		for {
+			select {
+			case err := <-sub.Err():
+				fmt.Println("Watcher errored")
+				return err
+			case vLog := <-logs:
+				handleConfigChanged(vLog)
+			}
+		}
+	})
 	log.Println("starting watching slots...")
-	go watchSlots()
+	go watchEvent(func(contract *CoinEmpire) error {
+		logs := make(chan *CoinEmpireSlotPurchased)
+		sub, err := contract.CoinEmpireFilterer.WatchSlotPurchased(nil, logs)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Success...")
+		for {
+			select {
+			case err := <-sub.Err():
+				fmt.Println("Watcher errored")
+				return err
+			case vLog := <-logs:
+				handleNewPurchase(vLog)
+			}
+		}
+	})
 	log.Println("starting watching price updates...")
-	go watchSamplingPriceEnded()
+	go watchEvent(func(contract *CoinEmpire) error {
+		logs := make(chan *CoinEmpireSamplingPriceEnded)
+		sub, err := contract.CoinEmpireFilterer.WatchSamplingPriceEnded(nil, logs)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Success...")
+		for {
+			select {
+			case err := <-sub.Err():
+				fmt.Println("Watcher errored")
+				return err
+			case vLog := <-logs:
+				handleSamplingPriceEnded(vLog)
+			}
+		}
+	})
+	log.Println("starting watching payouts...")
+	go watchEvent(func(contract *CoinEmpire) error {
+		logs := make(chan *CoinEmpirePayout)
+		sub, err := contract.CoinEmpireFilterer.WatchPayout(nil, logs)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Success...")
+		for {
+			select {
+			case err := <-sub.Err():
+				fmt.Println("Watcher errored")
+				return err
+			case vLog := <-logs:
+				handlePayout(vLog)
+			}
+		}
+	})
 
 	log.Println("starting api on port ", port)
 	err = server.Serve(port)
@@ -91,101 +182,32 @@ func main() {
 	log.Println("exiting...")
 }
 
-func updateSlots(contract *CoinEmpire) error {
-	purchaseEvents, err := contract.CoinEmpireFilterer.FilterSlotPurchased(&bind.FilterOpts{Start: 0, End: nil, Context: nil})
+func updatePayouts(contract *CoinEmpire) error {
+	events, err := contract.CoinEmpireFilterer.FilterPayout(nil)
 	if err != nil {
 		return err
 	}
 
-	for purchaseEvents.Next() {
-		handleNewPurchase(purchaseEvents.Event)
+	for events.Next() {
+		handlePayout(events.Event)
 	}
-
-	purchaseEvents.Close()
+	events.Close()
 
 	return nil
 }
 
-func watchSamplingPriceEnded() {
-	var conn *ethclient.Client
-	var contract *CoinEmpire
-	var err error
-
-	logs := make(chan *CoinEmpireSamplingPriceEnded)
-
-	fmt.Println("Subscribing SamplingPriceEnded")
-
-	var sub event.Subscription
-	err = retry(func() error {
-		conn, contract, err = initConn()
-		if err != nil {
-			log.Fatalf("Critical conn : %v", err)
-		}
-
-		sub, err = contract.CoinEmpireFilterer.WatchSamplingPriceEnded(&bind.WatchOpts{Start: nil, Context: nil}, logs)
-		if err != nil {
-			log.Printf("Error : %v", err)
-		}
-		return err
-	}, 10)
+func updateSlots(contract *CoinEmpire) error {
+	events, err := contract.CoinEmpireFilterer.FilterSlotPurchased(nil)
 	if err != nil {
-		log.Fatalf("Critical : %v", err)
-	}
-
-	defer conn.Close()
-
-	fmt.Println("Subscribed")
-
-	for {
-		select {
-		case err := <-sub.Err():
-			log.Fatal(err)
-		case vLog := <-logs:
-			fmt.Println(vLog) // pointer to event log
-			handleSamplingPriceEnded(vLog)
-		}
-	}
-}
-
-func watchSlots() {
-	var conn *ethclient.Client
-	var contract *CoinEmpire
-	var err error
-
-	logs := make(chan *CoinEmpireSlotPurchased)
-
-	fmt.Println("Subscribing WatchSlotPurchased...")
-
-	var sub event.Subscription
-	err = retry(func() error {
-		conn, contract, err = initConn()
-		if err != nil {
-			log.Fatalf("Critical conn : %v", err)
-		}
-
-		sub, err = contract.CoinEmpireFilterer.WatchSlotPurchased(&bind.WatchOpts{Start: nil, Context: nil}, logs)
-		if err != nil {
-			log.Printf("Error : %v", err)
-		}
 		return err
-	}, 10)
-	if err != nil {
-		log.Fatalf("Critical : %v", err)
 	}
 
-	defer conn.Close()
-
-	fmt.Println("Subscribed")
-
-	for {
-		select {
-		case err := <-sub.Err():
-			log.Fatal(err)
-		case vLog := <-logs:
-			fmt.Println(vLog) // pointer to event log
-			handleNewPurchase(vLog)
-		}
+	for events.Next() {
+		handleNewPurchase(events.Event)
 	}
+	events.Close()
+
+	return nil
 }
 
 func updateConfig(contract *CoinEmpire) error {
@@ -213,43 +235,30 @@ func updateAdditional(contract *CoinEmpire) error {
 	return nil
 }
 
-func watchConfig() {
-	var conn *ethclient.Client
-	var contract *CoinEmpire
+type subscriberF func(contract *CoinEmpire) error
+
+func watchEvent(subscriberFunc subscriberF) {
+
 	var err error
-	logs := make(chan *CoinEmpireConfigChanged)
+	fmt.Println("Subscribing...")
 
-	fmt.Println("Subscribing WatchConfigChanged...")
-	var sub event.Subscription
 	err = retry(func() error {
-		conn, contract, err = initConn()
-		if err != nil {
-			log.Fatalf("Critical conn: %v", err)
+		conn, contract, err2 := initConn()
+		if err2 != nil {
+			log.Fatalf("Critical conn: %v", err2)
 		}
+		defer conn.Close()
 
-		sub, err = contract.CoinEmpireFilterer.WatchConfigChanged(&bind.WatchOpts{Start: nil, Context: nil}, logs)
-		if err != nil {
-			log.Printf("Error : %v", err)
+		err2 = subscriberFunc(contract)
+		if err2 != nil {
+			log.Printf("Error : %v", err2)
 		}
-		return err
-	}, 10)
+		return err2
+	}, 500)
 	if err != nil {
 		log.Fatalf("Critical : %v", err)
 	}
 
-	defer conn.Close()
-
-	fmt.Println("Subscribed")
-
-	for {
-		select {
-		case err := <-sub.Err():
-			log.Fatal(err)
-		case vLog := <-logs:
-			fmt.Println(vLog) // pointer to event log
-			handleConfigChanged(vLog)
-		}
-	}
 }
 
 type fetchFunc func() error
@@ -282,6 +291,19 @@ func bytes32ToString(bytes [32]byte) string {
 	return string(bytes[:32])
 }
 
+func handlePayout(event *CoinEmpirePayout) {
+	server.Database.mux.Lock()
+	defer server.Database.mux.Unlock()
+	log.Println("New handlePayout!")
+	key := Key{event.Index.Uint64(), event.Tier}
+	slot, found := server.Database.indexToSlot[key]
+	if !found {
+		server.Database.indexToSlot[key] = SlotData{}
+	}
+	slot.Payout = big.NewInt(0).Add(server.Database.indexToSlot[key].Payout, event.Amount)
+	server.Database.indexToSlot[key] = slot
+}
+
 func handleConfigChanged(event *CoinEmpireConfigChanged) {
 	server.Database.mux.Lock()
 	defer server.Database.mux.Unlock()
@@ -294,7 +316,7 @@ func handleNewPurchase(event *CoinEmpireSlotPurchased) {
 	server.Database.mux.Lock()
 	defer server.Database.mux.Unlock()
 	log.Println("New handleNewPurchase!")
-	index := event.Price.Uint64()
+	index := event.Index.Uint64()
 	tier := event.Tier
 	owner := event.By.Hex()
 	prevOwner := event.From.Hex()
@@ -317,7 +339,7 @@ func handleNewPurchase(event *CoinEmpireSlotPurchased) {
 		}
 
 	} else {
-		server.Database.indexToSlot[key] = SlotData{index, tier, 0, owner, event.From.Hex()}
+		server.Database.indexToSlot[key] = SlotData{index, tier, big.NewInt(0), big.NewInt(0), big.NewInt(0), owner}
 		if server.Database.ownerToSlots[owner] == nil {
 			server.Database.ownerToSlots[owner] = make([]Key, 0)
 		}

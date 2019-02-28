@@ -10,11 +10,12 @@ type Key struct {
 
 // SlotData blabla
 type SlotData struct {
-	Index         uint64 `json:"index"`
-	Tier          uint8  `json:"tier"`
-	Price         uint64 `json:"price"`
-	Owner         string `json:"owner"`
-	PreviousOwner string `json:"previous_owner"`
+	Index    uint64   `json:"index"`
+	Tier     uint8    `json:"tier"`
+	Price    *big.Int `json:"price"`
+	Purchase *big.Int `json:"purchase_price"`
+	Payout   *big.Int `json:"total_payout"`
+	Owner    string   `json:"owner"`
 }
 
 // ConfigData blabla

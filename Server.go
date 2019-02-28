@@ -35,27 +35,32 @@ func enableDecoratorsGz(w *http.ResponseWriter) {
 	(*w).Header().Set("Content-Type", "text/javascript")
 }
 
-func (s *Server) getMinMax() (uint64, uint64) {
-	spread := s.Database.config.Spread.Uint64() / 2
-	precision := uint64(1000000)
-	price := s.Database.currentPrice.Uint64()
-	min := price * (precision - spread) / precision
-	max := price * (precision + spread) / precision
-	return min,max
+func (s *Server) getMinMax() (*big.Int, *big.Int) {
+	spread := big.NewInt(0).Div(s.Database.config.Spread, big.NewInt(2))
+	precision := big.NewInt(1000000)
+	m := big.NewInt(0).Sub(precision, spread)
+	m2 := big.NewInt(0).Add(precision, spread)
+	min := big.NewInt(0).Div(big.NewInt(0).Mul(s.Database.currentPrice, m), precision)
+	max := big.NewInt(0).Div(big.NewInt(0).Mul(s.Database.currentPrice, m2), precision)
+	return min, max
 }
 
-func getHotnessModifier(price uint64, hotness uint64) uint64 {
-	min, max := getMinMax()
-	med := (max - min) / 2
-	value = price - min - med
-	absValue = math.Abs(value);
-	precision = 1000000;
-	
-	result := absValue * precision / med * hotness / precision;
-	//clamp
-	result := math.Min(result, hotness);
+func (s *Server) getHotnessModifier(price *big.Int, hotness *big.Int) *big.Int {
+	min, max := s.getMinMax()
+	med := big.NewInt(0).Div(big.NewInt(0).Sub(max, min), big.NewInt(2))
+	value := big.NewInt(0).Sub(big.NewInt(0).Sub(price, min), med)
+	absValue := big.NewInt(0).Abs(value)
+	precision := big.NewInt(1000000)
 
-	return precision - result;
+	a := big.NewInt(0).Mul(absValue, precision)
+	b := big.NewInt(0).Div(a, med)
+	c := big.NewInt(0).Mul(b, hotness)
+	result := big.NewInt(0).Div(c, precision)
+	//clamp
+	if result.Cmp(hotness) == 1 {
+		result = hotness
+	}
+	return big.NewInt(0).Sub(precision, result)
 }
 
 // Serve start the server on port port
@@ -106,14 +111,13 @@ func (s *Server) Serve(port string) error {
 		enableCors(&w)
 
 		s.Database.mux.Lock()
-		spread := s.Database.config.Spread.Uint64() / 2
-		precision := uint64(1000000)
-		price := s.Database.currentPrice.Uint64()
-		min := price * (precision - spread) / precision
-		max := price * (precision + spread) / precision
+		precision := big.NewInt(1000000)
+		basePrice := s.Database.config.Tier1Price
+		mult := s.Database.config.RebuyMult
+		min, max := s.getMinMax()
 
-		minCity := min / 100
-		maxCity := max / 100
+		minCity := min.Uint64() / 100
+		maxCity := max.Uint64() / 100
 
 		citiesList := make([]SlotData, maxCity-minCity+1)
 
@@ -121,9 +125,15 @@ func (s *Server) Serve(port string) error {
 			searchKey := Key{i * 100, 0}
 			val := s.Database.indexToSlot[searchKey]
 			val.Index = searchKey.Index
-			if val.Price == 0 {
-				price := big.NewInt(0).Mul(s.Database.config.Tier1Price, s.Database.config.HotnessMod)
-				val.Price = 
+			if val.Price == nil {
+				mod := s.getHotnessModifier(big.NewInt(0).SetUint64(searchKey.Index), s.Database.config.HotnessMod)
+				price := big.NewInt(0)
+				if mod.Cmp(big.NewInt(0)) != 0 {
+					price.Mul(big.NewInt(0).Div(basePrice, precision), mod)
+				}
+				val.Purchase = big.NewInt(0).Add(basePrice, price)
+			} else {
+				val.Purchase = big.NewInt(0).Mul(big.NewInt(0).Div(val.Price, precision), mult)
 			}
 			citiesList[i-minCity] = val
 		}
@@ -138,17 +148,37 @@ func (s *Server) Serve(port string) error {
 		s.Database.mux.Unlock()
 	})
 
-	http.HandleFunc("/blocks", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/slots", func(w http.ResponseWriter, r *http.Request) {
 		enableCors(&w)
 		keysIndex, ok := r.URL.Query()["index"]
 		if !ok {
 			fmt.Fprintln(w, "Missing index param")
 			return
 		}
+		keysTier, ok := r.URL.Query()["tier"]
+		if !ok {
+			fmt.Fprintln(w, "Missing tier param")
+			return
+		}
 		index, err := strconv.Atoi(keysIndex[0])
+		if err != nil {
+			fmt.Fprintln(w, "Invalid index param")
+			return
+		}
+		tier, err := strconv.Atoi(keysTier[0])
+		if err != nil || tier > 2 || tier < 1 {
+			fmt.Fprintln(w, "Invalid tier param")
+			return
+		}
 		s.Database.mux.Lock()
 		min := uint64(index / 100 * 10)
 		max := uint64(index/100*10 + 9)
+		precision := big.NewInt(1000000)
+		basePrice := s.Database.config.Tier2Price
+		if tier == 2 {
+			basePrice = s.Database.config.Tier3Price
+		}
+		mult := s.Database.config.RebuyMult
 
 		list := make([]SlotData, max-min+1)
 
@@ -156,39 +186,18 @@ func (s *Server) Serve(port string) error {
 			searchKey := Key{i * 10, 0}
 			val := s.Database.indexToSlot[searchKey]
 			val.Index = searchKey.Index
-			val.Tier = 1
-			list[i-min] = val
-		}
+			val.Tier = uint8(tier)
+			if val.Price == nil {
+				mod := s.getHotnessModifier(big.NewInt(0).SetUint64(searchKey.Index), s.Database.config.HotnessMod)
+				price := big.NewInt(0)
+				if mod.Cmp(big.NewInt(0)) != 0 {
+					price.Mul(big.NewInt(0).Div(basePrice, precision), mod)
+				}
+				val.Purchase = big.NewInt(0).Add(basePrice, price)
+			} else {
+				val.Purchase = big.NewInt(0).Mul(big.NewInt(0).Div(val.Price, precision), mult)
+			}
 
-		data, err := json.Marshal(list)
-		if err != nil {
-			fmt.Fprintln(w, err.Error())
-		} else {
-			str := string(data[:])
-			fmt.Fprintln(w, str)
-		}
-		s.Database.mux.Unlock()
-	})
-
-	http.HandleFunc("/lots", func(w http.ResponseWriter, r *http.Request) {
-		enableCors(&w)
-		keysIndex, ok := r.URL.Query()["index"]
-		if !ok {
-			fmt.Fprintln(w, "Missing index param")
-			return
-		}
-		index, err := strconv.Atoi(keysIndex[0])
-		s.Database.mux.Lock()
-		min := uint64(index / 100 * 100)
-		max := uint64(index/100*100 + 9)
-
-		list := make([]SlotData, max-min+1)
-
-		for i := min; i <= max; i++ {
-			searchKey := Key{i, 0}
-			val := s.Database.indexToSlot[searchKey]
-			val.Index = searchKey.Index
-			val.Tier = 2
 			list[i-min] = val
 		}
 
