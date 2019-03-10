@@ -18,7 +18,7 @@ type Db struct {
 	indexToSlot  map[Key]SlotData
 	config       ConfigData
 	configMap    map[string]**big.Int
-	currentPrice *big.Int
+	liveData     LiveData
 }
 
 // NewDb create a new database

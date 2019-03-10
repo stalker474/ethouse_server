@@ -3,10 +3,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"strconv"
+
+	websocket "github.com/gorilla/websocket"
 )
+
+var upgrader = websocket.Upgrader{} // use default options
 
 // Server Represents our api server
 type Server struct {
@@ -40,8 +45,8 @@ func (s *Server) getMinMax() (*big.Int, *big.Int) {
 	precision := big.NewInt(1000000)
 	m := big.NewInt(0).Sub(precision, spread)
 	m2 := big.NewInt(0).Add(precision, spread)
-	min := big.NewInt(0).Div(big.NewInt(0).Mul(s.Database.currentPrice, m), precision)
-	max := big.NewInt(0).Div(big.NewInt(0).Mul(s.Database.currentPrice, m2), precision)
+	min := big.NewInt(0).Div(big.NewInt(0).Mul(s.Database.liveData.CurrentPrice, m), precision)
+	max := big.NewInt(0).Div(big.NewInt(0).Mul(s.Database.liveData.CurrentPrice, m2), precision)
 	return min, max
 }
 
@@ -65,6 +70,29 @@ func (s *Server) getHotnessModifier(price *big.Int, hotness *big.Int) *big.Int {
 
 // Serve start the server on port port
 func (s *Server) Serve(port string) error {
+
+	http.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
+		enableCors(&w)
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Print("upgrade:", err)
+			return
+		}
+		defer c.Close()
+		for {
+			mt, message, err := c.ReadMessage()
+			if err != nil {
+				log.Println("read:", err)
+				break
+			}
+			log.Printf("recv: %s", message)
+			err = c.WriteMessage(mt, message)
+			if err != nil {
+				log.Println("write:", err)
+				break
+			}
+		}
+	})
 
 	http.HandleFunc("/owned", func(w http.ResponseWriter, r *http.Request) {
 		//enableDecoratorsGz(&w)
@@ -98,6 +126,21 @@ func (s *Server) Serve(port string) error {
 		s.Database.mux.Lock()
 
 		data, err := json.Marshal(s.Database.config)
+		if err != nil {
+			fmt.Fprintln(w, err.Error())
+		} else {
+			str := string(data[:])
+			fmt.Fprintln(w, str)
+		}
+		s.Database.mux.Unlock()
+	})
+
+	http.HandleFunc("/livedata", func(w http.ResponseWriter, r *http.Request) {
+		enableCors(&w)
+
+		s.Database.mux.Lock()
+
+		data, err := json.Marshal(s.Database.liveData)
 		if err != nil {
 			fmt.Fprintln(w, err.Error())
 		} else {

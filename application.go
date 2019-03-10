@@ -227,11 +227,16 @@ func updateConfig(contract *CoinEmpire) error {
 func updateAdditional(contract *CoinEmpire) error {
 	server.Database.mux.Lock()
 	defer server.Database.mux.Unlock()
-	result, err := contract.CurrentPrice(nil)
+	resultCP, err := contract.CurrentPrice(nil)
 	if err != nil {
 		return err
 	}
-	server.Database.currentPrice = result
+	resultH, err := contract.House(nil)
+	if err != nil {
+		return err
+	}
+	server.Database.liveData.CurrentPrice = resultCP
+	server.Database.liveData.Pool = resultH
 	return nil
 }
 
@@ -353,5 +358,5 @@ func handleSamplingPriceEnded(event *CoinEmpireSamplingPriceEnded) {
 	defer server.Database.mux.Unlock()
 	log.Println("New handleSamplingPriceEnded!")
 	//update min max and stuff
-	server.Database.currentPrice = event.Price
+	server.Database.liveData.CurrentPrice = event.Price
 }

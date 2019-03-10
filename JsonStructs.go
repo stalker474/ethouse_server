@@ -35,6 +35,12 @@ type ConfigData struct {
 	HouseCut        *big.Int `json:"house_cut"`
 }
 
+// LiveData blabla
+type LiveData struct {
+	CurrentPrice *big.Int `json:"current_price"`
+	Pool         *big.Int `json:"pool"`
+}
+
 // ConfigNames blabla
 var ConfigNames = [...]string{
 	"PRICECHECK_DELAY",
