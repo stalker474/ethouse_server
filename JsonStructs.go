@@ -39,6 +39,7 @@ type ConfigData struct {
 type LiveData struct {
 	CurrentPrice *big.Int `json:"current_price"`
 	Pool         *big.Int `json:"pool"`
+	LatestSample *big.Int `json:"latest_sample"`
 }
 
 // ConfigNames blabla

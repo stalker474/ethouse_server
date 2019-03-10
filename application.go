@@ -152,6 +152,7 @@ func main() {
 				return err
 			case vLog := <-logs:
 				handleSamplingPriceEnded(vLog)
+				updateAdditional(contract)
 			}
 		}
 	})
@@ -235,8 +236,13 @@ func updateAdditional(contract *CoinEmpire) error {
 	if err != nil {
 		return err
 	}
+	resultLS, err := contract.LatestSample(nil)
+	if err != nil {
+		return err
+	}
 	server.Database.liveData.CurrentPrice = resultCP
 	server.Database.liveData.Pool = resultH
+	server.Database.liveData.LatestSample = resultLS
 	return nil
 }
 
