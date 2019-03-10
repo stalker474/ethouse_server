@@ -1,6 +1,8 @@
 branch-defaults:
   default:
     environment: dev-env
+  master:
+    environment: empire-api
 environment-defaults:
   dev-env:
     branch: null
