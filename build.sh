@@ -1,3 +1,3 @@
-sudo go get "github.com/gorilla/mux"
-sudo go get "github.com/ethereum/go-ethereum"
+go get -u "github.com/gorilla/mux"
+go get -u "github.com/ethereum/go-ethereum"
 go build -o bin/application
